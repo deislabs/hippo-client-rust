@@ -108,14 +108,30 @@ impl Client {
 
     /// Registers the given revision
     #[instrument(level = "trace", skip(self, revision_number), fields(revision_number = %revision_number))]
-    pub async fn register_revision(
+    pub async fn register_revision_by_application(
         &self,
         application_id: &Uuid,
         revision_number: &str,
     ) -> Result<()> {
         let full_path = format!("api/revision?AppId={}&RevisionNumber={}", application_id, revision_number);
         let response = self.raw(Method::POST, &full_path, Option::<String>::None).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
-        if response.status() == StatusCode::CREATED {
+        if response.status() == StatusCode::OK {
+            Ok(())
+        } else {
+            Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
+        }
+    }
+
+    /// Registers the given revision
+    #[instrument(level = "trace", skip(self, revision_number), fields(revision_number = %revision_number))]
+    pub async fn register_revision_by_storage_id(
+        &self,
+        storage_id: &str,
+        revision_number: &str,
+    ) -> Result<()> {
+        let full_path = format!("api/revision?AppStorageId={}&RevisionNumber={}", storage_id, revision_number);
+        let response = self.raw(Method::POST, &full_path, Option::<String>::None).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
+        if response.status() == StatusCode::OK {
             Ok(())
         } else {
             Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
@@ -165,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn can_log_in() -> Result<()> {
         let client = Client::new_from_login("https://localhost:5001/", "admin", "Passw0rd!").await?;
-        client.register_revision(&Uuid::parse_str("64713597-149f-45be-b74b-ba850b71425e").unwrap(), "4.0.9").await?;
+        client.register_revision_by_storage_id("hippos.rocks/helloworld", "1.1.3").await?;
         Ok(())
     }
 }
