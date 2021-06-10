@@ -3,10 +3,10 @@ mod error;
 use reqwest::Method;
 use reqwest::header;
 use reqwest::Client as HttpClient;
-use reqwest::{Body, RequestBuilder, StatusCode};
+use reqwest::{StatusCode};
 use serde::{Deserialize, Serialize};
-use tokio_stream::{Stream, StreamExt};
-use tracing::{debug, info, instrument, trace};
+// use tokio_stream::{Stream, StreamExt};
+use tracing::{info, instrument};
 use url::Url;
 use uuid::Uuid;
 
@@ -170,41 +170,6 @@ impl Client {
             Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
         }
     }
-
-    // /// Same as [`create_invoice`](Client::create_invoice), but takes a path to an invoice file
-    // /// instead. This will load the invoice file directly into the request, skipping serialization
-    // #[instrument(level = "trace", skip(self, file_path), fields(path = %file_path.as_ref().display()))]
-    // pub async fn create_invoice_from_file<P: AsRef<Path>>(
-    //     &self,
-    //     file_path: P,
-    // ) -> Result<crate::InvoiceCreateResponse> {
-    //     // Create an owned version of the path to avoid worrying about lifetimes here for the stream
-    //     let path = file_path.as_ref().to_owned();
-    //     debug!("Loading invoice from file");
-    //     let inv_stream = load::raw(path).await?;
-    //     debug!("Successfully loaded invoice stream");
-    //     let req = self
-    //         .create_invoice_builder()
-    //         .body(Body::wrap_stream(inv_stream));
-    //     self.create_invoice_request(req).await
-    // }
-
-    // fn create_invoice_builder(&self) -> RequestBuilder {
-    //     // We can unwrap here because any URL error would be programmers fault
-    //     self.client
-    //         .post(self.base_url.join(INVOICE_ENDPOINT).unwrap())
-    //         .header(header::CONTENT_TYPE, TOML_MIME_TYPE)
-    // }
-
-    // async fn create_invoice_request(
-    //     &self,
-    //     req: RequestBuilder,
-    // ) -> Result<crate::InvoiceCreateResponse> {
-    //     trace!(?req);
-    //     let resp = req.send().await?;
-    //     let resp = unwrap_status(resp, Endpoint::Invoice).await?;
-    //     Ok(toml::from_slice(&resp.bytes().await?)?)
-    // }
 }
 
 #[cfg(test)]
