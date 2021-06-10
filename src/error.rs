@@ -13,12 +13,10 @@ pub enum ClientError {
     /// IO errors from interacting with the file system
     #[error("Error while performing IO operation: {0:?}")]
     Io(#[from] std::io::Error),
-    /// Invalid JSON serialization that can occur when serializing an object to a request
-    // #[error("Invalid JSON: {0:?}")]
-    // JsonSerializationError(#[from] toml::ser::Error),
-    /// Invalid JSON deserialization that can occur when serializing an object to a request
+    /// Invalid JSON serialization or deserialization serializing an object to a request
+    /// or from a response
     #[error("Invalid JSON: {0:?}")]
-    DeserializationError(#[from] serde_json::Error),
+    SerializationError(#[from] serde_json::Error),
     /// There was a problem with the http client. This is likely not a user issue. Contains the
     /// underlying error
     #[error("Error creating request: {0:?}")]

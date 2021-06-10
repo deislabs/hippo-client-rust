@@ -32,6 +32,32 @@ struct CreateTokenResponse {
     expiration: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RegisterRevisionRequest {
+    app_id: Option<String>,  // Uuid would be better but gives serialisation errors that I am not interested in looking into right now
+    app_storage_id: Option<String>,
+    revision_number: String,
+}
+
+impl RegisterRevisionRequest {
+    pub fn for_app(app_id: impl Into<String>, revision_number: impl Into<String>) -> Self {
+        Self {
+            app_id: Some(app_id.into()),
+            app_storage_id: None,
+            revision_number: revision_number.into(),
+        }
+    }
+
+    pub fn for_bindle_name(bindle_name: impl Into<String>, revision_number: impl Into<String>) -> Self {
+        Self {
+            app_id: None,
+            app_storage_id: Some(bindle_name.into()),
+            revision_number: revision_number.into(),
+        }
+    }
+}
+
 impl Client {
     /// Returns a new Client with the given URL.
     pub async fn new_from_login(base_url: &str, username: &str, password: &str) -> Result<Self> {
@@ -72,19 +98,22 @@ impl Client {
         &self,
         method: reqwest::Method,
         path: &str,
-        body: Option<impl Into<reqwest::Body>>,
+        body: Option<String>,
     ) -> anyhow::Result<reqwest::Response> {
         let req = self.client
             .request(method, self.base_url.join(path)?)
             .bearer_auth(&self.auth_token);
 
         let req = match body {
-            Some(b) => req.body(b),
-            None => req,
+            Some(b) => {
+                req.header(header::CONTENT_LENGTH, b.as_bytes().len())
+                   .body(b.clone())
+            },
+            None => {
+                req.header(header::CONTENT_LENGTH, 0)
+            },
         };
 
-        let req = req.header(header::CONTENT_LENGTH, 0);  // TODO: WTF
-        // println!("{:?}", &req);
         req.send().await.map_err(|e| e.into())
     }
 
@@ -100,7 +129,7 @@ impl Client {
             .body(body);
         let response = req.send().await.map_err(|e| ClientError::HttpClientError(e))?;
         let response_body = response.bytes().await?;
-        let token_response: CreateTokenResponse = serde_json::from_slice(&response_body).map_err(|e| ClientError::DeserializationError(e))?;
+        let token_response: CreateTokenResponse = serde_json::from_slice(&response_body).map_err(|e| ClientError::SerializationError(e))?;
         Ok(token_response.token)
     }
 
@@ -113,9 +142,11 @@ impl Client {
         application_id: &Uuid,
         revision_number: &str,
     ) -> Result<()> {
-        let full_path = format!("api/revision?AppId={}&RevisionNumber={}", application_id, revision_number);
-        let response = self.raw(Method::POST, &full_path, Option::<String>::None).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
-        if response.status() == StatusCode::OK {
+        let path = "api/revision";
+        let request = RegisterRevisionRequest::for_app(application_id.to_string(), revision_number);
+        let request_json = serde_json::to_string(&request).map_err(|e| ClientError::SerializationError(e))?;
+        let response = self.raw(Method::POST, &path, Some(request_json)).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
+        if response.status() == StatusCode::CREATED {
             Ok(())
         } else {
             Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
@@ -126,12 +157,14 @@ impl Client {
     #[instrument(level = "trace", skip(self, revision_number), fields(revision_number = %revision_number))]
     pub async fn register_revision_by_storage_id(
         &self,
-        storage_id: &str,
+        bindle_name: &str,
         revision_number: &str,
     ) -> Result<()> {
-        let full_path = format!("api/revision?AppStorageId={}&RevisionNumber={}", storage_id, revision_number);
-        let response = self.raw(Method::POST, &full_path, Option::<String>::None).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
-        if response.status() == StatusCode::OK {
+        let path = "api/revision";
+        let request = RegisterRevisionRequest::for_bindle_name(bindle_name, revision_number);
+        let request_json = serde_json::to_string(&request).map_err(|e| ClientError::SerializationError(e))?;
+        let response = self.raw(Method::POST, &path, Some(request_json)).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
+        if response.status() == StatusCode::CREATED {
             Ok(())
         } else {
             Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
@@ -181,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn can_log_in() -> Result<()> {
         let client = Client::new_from_login("https://localhost:5001/", "admin", "Passw0rd!").await?;
-        client.register_revision_by_storage_id("hippos.rocks/helloworld", "1.1.3").await?;
+        client.register_revision_by_storage_id("hippos.rocks/helloworld", "1.1.1").await?;
         Ok(())
     }
 }
