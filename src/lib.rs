@@ -25,6 +25,18 @@ pub struct Client {
     auth_token: String,
 }
 
+pub struct ClientOptions {
+    pub danger_accept_invalid_certs: bool,
+}
+
+impl Default for ClientOptions {
+    fn default() -> Self {
+        Self {
+            danger_accept_invalid_certs: false,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct CreateTokenResponse {
@@ -60,7 +72,12 @@ impl RegisterRevisionRequest {
 
 impl Client {
     /// Returns a new Client with the given URL.
-    pub async fn new_from_login(base_url: &str, username: &str, password: &str) -> Result<Self> {
+    pub async fn new(base_url: &str, username: &str, password: &str) -> Result<Self> {
+        Self::new_with_options(base_url, username, password, ClientOptions::default()).await
+    }
+
+    /// Returns a new Client with the given URL.
+    pub async fn new_with_options(base_url: &str, username: &str, password: &str, options: ClientOptions) -> Result<Self> {
         // Note that the trailing slash is important, otherwise the URL parser will treat is as a
         // "file" component of the URL. So we need to check that it is added before parsing
         let mut base = base_url.to_owned();
@@ -72,13 +89,11 @@ impl Client {
         let mut headers = header::HeaderMap::new();
         headers.insert(header::ACCEPT, JSON_MIME_TYPE.parse().unwrap());
         headers.insert(header::CONTENT_TYPE, JSON_MIME_TYPE.parse().unwrap());
-        // TODO: As this evolves, we might want to allow for setting time outs and accepting
-        // self-signed certs
+        // TODO: As this evolves, we might want to allow for setting timeouts etc.
         let client = HttpClient::builder()
             // .http2_prior_knowledge()
+            .and_if(options.danger_accept_invalid_certs, |b| b.danger_accept_invalid_certs(true))
             .default_headers(headers)
-            // TODO: Awoogah, Dave. There's an emergency.
-            .danger_accept_invalid_certs(true)
             .build()
             .map_err(|e| ClientError::Other(e.to_string()))?;
         let base_url = base_parsed;
@@ -172,13 +187,29 @@ impl Client {
     }
 }
 
+trait ConditionalBuilder {
+    fn and_if(self, condition: bool, build_method: impl Fn(Self) -> Self) -> Self
+    where
+        Self: Sized
+    {
+        if condition {
+            build_method(self)
+        } else {
+            self
+        }
+    }
+}
+
+impl ConditionalBuilder for reqwest::ClientBuilder {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn can_log_in() -> Result<()> {
-        let client = Client::new_from_login("https://localhost:5001/", "admin", "Passw0rd!").await?;
+        let options = ClientOptions { danger_accept_invalid_certs: true };
+        let client = Client::new_with_options("https://localhost:5001/", "admin", "Passw0rd!", options).await?;
         client.register_revision_by_storage_id("hippos.rocks/helloworld", "1.1.1").await?;
         Ok(())
     }
