@@ -46,6 +46,13 @@ struct CreateTokenResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct AccountRegisterRequest {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RegisterRevisionRequest {
     app_id: Option<String>,  // Uuid would be better but gives serialisation errors that I am not interested in looking into right now
     app_storage_id: Option<String>,
@@ -150,6 +157,18 @@ impl Client {
 
     //////////////// Accounts ////////////////
 
+    /// Register a new account with the given credentials. If successful, the caller may call login() with the same credentials to use the API.
+    pub async fn register(&self, username: &str, password: &str) -> Result<()> {
+        let request = AccountRegisterRequest{username: username.to_string(), password: password.to_string()};
+        let request_json = serde_json::to_string(&request).map_err(|e| ClientError::SerializationError(e))?;
+        let response = self.raw(Method::POST, "api/accounts/register", Some(request_json)).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
+        if response.status() == StatusCode::CREATED {
+            Ok(())
+        } else {
+            Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
+        }
+    }
+
     /// Log in with the given credentials
     pub async fn login(&mut self, username: &str, password: &str) -> Result<()> {
         self.auth_token = Self::create_token(&self.client, &self.base_url, username, password).await?;
@@ -219,6 +238,15 @@ mod tests {
         let options = ClientOptions { danger_accept_invalid_certs: true };
         let mut client = Client::new_with_options("https://localhost:5001/", options).await?;
         client.login("admin", "Passw0rd!").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn can_register() -> Result<()> {
+        let options = ClientOptions { danger_accept_invalid_certs: true };
+        let mut client = Client::new_with_options("https://localhost:5001/", options).await?;
+        client.register("newuser", "Passw0rd!").await?;
+        client.login("newuser", "Passw0rd!").await?;
         Ok(())
     }
 
