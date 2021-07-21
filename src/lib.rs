@@ -25,6 +25,13 @@ pub struct Client {
     auth_token: String,
 }
 
+/// A client type for performing Hippo operations that don't require login
+#[derive(Clone)]
+pub struct UnauthenticatedClient {
+    client: HttpClient,
+    base_url: Url,
+}
+
 pub struct ClientOptions {
     pub danger_accept_invalid_certs: bool,
 }
@@ -78,6 +85,77 @@ impl Client {
 
     /// Returns a new Client with the given URL.
     pub async fn new_with_options(base_url: &str, username: &str, password: &str, options: ClientOptions) -> Result<Self> {
+        UnauthenticatedClient::new_with_options(base_url, options)?.login(username, password).await
+    }
+
+    /// Logs out of Hippo
+    pub fn logout(self) -> UnauthenticatedClient {
+        UnauthenticatedClient {
+            client: self.client,
+            base_url: self.base_url,
+        }
+    }
+
+    /// Performs a raw request using the underlying HTTP client and returns the raw response. The
+    /// path is just the path part of your URL. It will be joined with the configured base URL for
+    /// the client.
+    #[instrument(level = "trace", skip(self, body))]
+    pub async fn raw(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<String>,
+    ) -> Result<reqwest::Response> {
+        raw(&self.client, &self.base_url, Some(&self.auth_token), method, path, body).await
+    }
+
+    //////////////// Register Revision ////////////////
+
+    /// Registers the given revision
+    #[instrument(level = "trace", skip(self, revision_number), fields(revision_number = %revision_number))]
+    pub async fn register_revision_by_application(
+        &self,
+        application_id: &Uuid,
+        revision_number: &str,
+    ) -> Result<()> {
+        let path = "api/revision";
+        let request = RegisterRevisionRequest::for_app(application_id.to_string(), revision_number);
+        let request_json = serde_json::to_string(&request).map_err(ClientError::SerializationError)?;
+        let response = self.raw(Method::POST, &path, Some(request_json)).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
+        if response.status() == StatusCode::CREATED {
+            Ok(())
+        } else {
+            Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
+        }
+    }
+
+    /// Registers the given revision
+    #[instrument(level = "trace", skip(self, revision_number), fields(revision_number = %revision_number))]
+    pub async fn register_revision_by_storage_id(
+        &self,
+        bindle_name: &str,
+        revision_number: &str,
+    ) -> Result<()> {
+        let path = "api/revision";
+        let request = RegisterRevisionRequest::for_bindle_name(bindle_name, revision_number);
+        let request_json = serde_json::to_string(&request).map_err(ClientError::SerializationError)?;
+        let response = self.raw(Method::POST, &path, Some(request_json)).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
+        if response.status() == StatusCode::CREATED {
+            Ok(())
+        } else {
+            Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
+        }
+    }
+}
+
+impl UnauthenticatedClient {
+    /// Returns a new Client with the given URL.
+    pub fn new(base_url: &str) -> Result<Self> {
+        Self::new_with_options(base_url, ClientOptions::default())
+    }
+
+    /// Returns a new Client with the given URL.
+    pub fn new_with_options(base_url: &str, options: ClientOptions) -> Result<Self> {
         // Note that the trailing slash is important, otherwise the URL parser will treat is as a
         // "file" component of the URL. So we need to check that it is added before parsing
         let mut base = base_url.to_owned();
@@ -97,10 +175,19 @@ impl Client {
             .build()
             .map_err(|e| ClientError::Other(e.to_string()))?;
         let base_url = base_parsed;
-        let auth_token = Self::create_token(&client, &base_url, username, password).await?;
-        Ok(Client {
+        Ok(Self {
             client,
             base_url,
+        })
+    }
+
+    /// Logs into Hippo
+    pub async fn login(self, username: &str, password: &str) -> Result<Client> {
+        // TODO: As this evolves, we might want to allow for setting timeouts etc.
+        let auth_token = self.create_token(username, password).await?;
+        Ok(Client {
+            client: self.client,
+            base_url: self.base_url,
             auth_token,
         })
     }
@@ -114,78 +201,49 @@ impl Client {
         method: reqwest::Method,
         path: &str,
         body: Option<String>,
-    ) -> anyhow::Result<reqwest::Response> {
-        let req = self.client
-            .request(method, self.base_url.join(path)?)
-            .bearer_auth(&self.auth_token);
-
-        let req = match body {
-            Some(b) => {
-                req.header(header::CONTENT_LENGTH, b.as_bytes().len())
-                   .body(b.clone())
-            },
-            None => {
-                req.header(header::CONTENT_LENGTH, 0)
-            },
-        };
-
-        req.send().await.map_err(|e| e.into())
+    ) -> Result<reqwest::Response> {
+        raw(&self.client, &self.base_url, None, method, path, body).await
     }
 
-    #[instrument(level = "trace", skip(password))]
+    #[instrument(level = "trace", skip(self, password))]
     async fn create_token(
-        client: &HttpClient,
-        base_url: &Url,
+        &self,
         username: &str,
         password: &str,
     ) -> Result<String> {
         let body = format!("{{ \"username\": \"{}\", \"password\": \"{}\" }}", username, password);
-        let req = client.request(Method::POST, base_url.join("account/createtoken")?)
-            .body(body);
-        let response = req.send().await.map_err(|e| ClientError::HttpClientError(e))?;
+        let response = self.raw(Method::POST, "account/createtoken", Some(body)).await?;
         let response_body = response.bytes().await?;
-        let token_response: CreateTokenResponse = serde_json::from_slice(&response_body).map_err(|e| ClientError::SerializationError(e))?;
+        let token_response: CreateTokenResponse = serde_json::from_slice(&response_body).map_err(ClientError::SerializationError)?;
         Ok(token_response.token)
     }
-
-    //////////////// Register Revision ////////////////
-
-    /// Registers the given revision
-    #[instrument(level = "trace", skip(self, revision_number), fields(revision_number = %revision_number))]
-    pub async fn register_revision_by_application(
-        &self,
-        application_id: &Uuid,
-        revision_number: &str,
-    ) -> Result<()> {
-        let path = "api/revision";
-        let request = RegisterRevisionRequest::for_app(application_id.to_string(), revision_number);
-        let request_json = serde_json::to_string(&request).map_err(|e| ClientError::SerializationError(e))?;
-        let response = self.raw(Method::POST, &path, Some(request_json)).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
-        if response.status() == StatusCode::CREATED {
-            Ok(())
-        } else {
-            Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
-        }
-    }
-
-    /// Registers the given revision
-    #[instrument(level = "trace", skip(self, revision_number), fields(revision_number = %revision_number))]
-    pub async fn register_revision_by_storage_id(
-        &self,
-        bindle_name: &str,
-        revision_number: &str,
-    ) -> Result<()> {
-        let path = "api/revision";
-        let request = RegisterRevisionRequest::for_bindle_name(bindle_name, revision_number);
-        let request_json = serde_json::to_string(&request).map_err(|e| ClientError::SerializationError(e))?;
-        let response = self.raw(Method::POST, &path, Some(request_json)).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
-        if response.status() == StatusCode::CREATED {
-            Ok(())
-        } else {
-            Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
-        }
-    }
 }
+
+async fn raw(
+    http_client: &HttpClient,
+    base_url: &Url,
+    auth_token: Option<&String>,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<String>,
+) -> Result<reqwest::Response> {
+    let req = http_client
+        .request(method, base_url.join(path)?)
+        .and_if_some(&auth_token, |b, tok| b.bearer_auth(&tok));
+
+    let req = match body {
+        Some(b) => {
+            req.header(header::CONTENT_LENGTH, b.as_bytes().len())
+               .body(b.clone())
+        },
+        None => {
+            req.header(header::CONTENT_LENGTH, 0)
+        },
+    };
+
+    req.send().await.map_err(ClientError::HttpClientError)
+}
+
 
 trait ConditionalBuilder {
     fn and_if(self, condition: bool, build_method: impl Fn(Self) -> Self) -> Self
@@ -198,9 +256,20 @@ trait ConditionalBuilder {
             self
         }
     }
+
+    fn and_if_some<T>(self, value: &Option<T>, build_method: impl Fn(Self, &T) -> Self) -> Self
+    where
+        Self: Sized
+    {
+        match value {
+            None => self,
+            Some(v) => build_method(self, v),
+        }
+    }
 }
 
 impl ConditionalBuilder for reqwest::ClientBuilder {}
+impl ConditionalBuilder for reqwest::RequestBuilder {}
 
 #[cfg(test)]
 mod tests {
@@ -211,6 +280,15 @@ mod tests {
         let options = ClientOptions { danger_accept_invalid_certs: true };
         let client = Client::new_with_options("https://localhost:5001/", "admin", "Passw0rd!", options).await?;
         client.register_revision_by_storage_id("hippos.rocks/helloworld", "1.1.1").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn can_log_in_from_unauth_client() -> Result<()> {
+        let options = ClientOptions { danger_accept_invalid_certs: true };
+        let client = UnauthenticatedClient::new_with_options("https://localhost:5001/", options)?;
+        let authed = client.login("admin", "Passw0rd!").await?;
+        authed.logout();
         Ok(())
     }
 }
