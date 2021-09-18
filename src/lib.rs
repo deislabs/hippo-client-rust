@@ -46,6 +46,13 @@ struct CreateTokenResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct AccountRegisterRequest {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RegisterRevisionRequest {
     app_id: Option<String>,  // Uuid would be better but gives serialisation errors that I am not interested in looking into right now
     app_storage_id: Option<String>,
@@ -72,12 +79,12 @@ impl RegisterRevisionRequest {
 
 impl Client {
     /// Returns a new Client with the given URL.
-    pub async fn new(base_url: &str, username: &str, password: &str) -> Result<Self> {
-        Self::new_with_options(base_url, username, password, ClientOptions::default()).await
+    pub async fn new(base_url: &str) -> Result<Self> {
+        Self::new_with_options(base_url, ClientOptions::default()).await
     }
 
     /// Returns a new Client with the given URL.
-    pub async fn new_with_options(base_url: &str, username: &str, password: &str, options: ClientOptions) -> Result<Self> {
+    pub async fn new_with_options(base_url: &str, options: ClientOptions) -> Result<Self> {
         // Note that the trailing slash is important, otherwise the URL parser will treat is as a
         // "file" component of the URL. So we need to check that it is added before parsing
         let mut base = base_url.to_owned();
@@ -97,11 +104,11 @@ impl Client {
             .build()
             .map_err(|e| ClientError::Other(e.to_string()))?;
         let base_url = base_parsed;
-        let auth_token = Self::create_token(&client, &base_url, username, password).await?;
         Ok(Client {
             client,
             base_url,
-            auth_token,
+            // must call login() to request a new auth token
+            auth_token: "".to_owned(),
         })
     }
 
@@ -146,6 +153,26 @@ impl Client {
         let response_body = response.bytes().await?;
         let token_response: CreateTokenResponse = serde_json::from_slice(&response_body).map_err(|e| ClientError::SerializationError(e))?;
         Ok(token_response.token)
+    }
+
+    //////////////// Accounts ////////////////
+
+    /// Register a new account with the given credentials. If successful, the caller may call login() with the same credentials to use the API.
+    pub async fn register(&self, username: &str, password: &str) -> Result<()> {
+        let request = AccountRegisterRequest{username: username.to_string(), password: password.to_string()};
+        let request_json = serde_json::to_string(&request).map_err(|e| ClientError::SerializationError(e))?;
+        let response = self.raw(Method::POST, "api/accounts/register", Some(request_json)).await.map_err(|e| ClientError::Other(format!("{}", e)))?;
+        if response.status() == StatusCode::CREATED {
+            Ok(())
+        } else {
+            Err(ClientError::InvalidRequest { status_code: response.status(), message: Some(core::str::from_utf8(&response.bytes().await.unwrap()).unwrap().to_owned()) })
+        }
+    }
+
+    /// Log in with the given credentials
+    pub async fn login(&mut self, username: &str, password: &str) -> Result<()> {
+        self.auth_token = Self::create_token(&self.client, &self.base_url, username, password).await?;
+        Ok(())
     }
 
     //////////////// Register Revision ////////////////
@@ -209,7 +236,25 @@ mod tests {
     #[tokio::test]
     async fn can_log_in() -> Result<()> {
         let options = ClientOptions { danger_accept_invalid_certs: true };
-        let client = Client::new_with_options("https://localhost:5001/", "admin", "Passw0rd!", options).await?;
+        let mut client = Client::new_with_options("https://localhost:5001/", options).await?;
+        client.login("admin", "Passw0rd!").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn can_register() -> Result<()> {
+        let options = ClientOptions { danger_accept_invalid_certs: true };
+        let mut client = Client::new_with_options("https://localhost:5001/", options).await?;
+        client.register("newuser", "Passw0rd!").await?;
+        client.login("newuser", "Passw0rd!").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn can_register_revision_by_storage_id() -> Result<()> {
+        let options = ClientOptions { danger_accept_invalid_certs: true };
+        let mut client = Client::new_with_options("https://localhost:5001/", options).await?;
+        client.login("admin", "Passw0rd!").await?;
         client.register_revision_by_storage_id("hippos.rocks/helloworld", "1.1.1").await?;
         Ok(())
     }
