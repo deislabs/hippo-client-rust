@@ -140,7 +140,7 @@ impl Client {
         password: &str,
     ) -> Result<String> {
         let body = format!("{{ \"username\": \"{}\", \"password\": \"{}\" }}", username, password);
-        let req = client.request(Method::POST, base_url.join("account/createtoken")?)
+        let req = client.request(Method::POST, base_url.join("api/account/createtoken")?)
             .body(body);
         let response = req.send().await.map_err(|e| ClientError::HttpClientError(e))?;
         let response_body = response.bytes().await?;
