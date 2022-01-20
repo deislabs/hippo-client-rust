@@ -37,6 +37,12 @@ impl Default for ClientOptions {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct CreateTokenRequest {
+    username: String,
+    password: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct CreateTokenResponse {
@@ -139,9 +145,12 @@ impl Client {
         username: &str,
         password: &str,
     ) -> Result<String> {
-        let body = format!("{{ \"username\": \"{}\", \"password\": \"{}\" }}", username, password);
+        let token_req = CreateTokenRequest {
+            username: username.to_owned(),
+            password: password.to_owned()
+        };
         let req = client.request(Method::POST, base_url.join("account/createtoken")?)
-            .body(body);
+            .body(serde_json::to_string(&token_req)?);
         let response = req.send().await.map_err(|e| ClientError::HttpClientError(e))?;
         let response_body = response.bytes().await?;
         let token_response: CreateTokenResponse = serde_json::from_slice(&response_body).map_err(|e| ClientError::SerializationError(e))?;
